@@ -13,12 +13,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download Piwigo
+      - name: Download and Extract Piwigo
         id: download_piwigo
         run: |
           PIWIGO_VERSION="14.0.0" 
           PIWIGO_URL="https://piwigo.org/download/dlcounter.php?code=latest&id=piwigo-${PIWIGO_VERSION}.zip"
           echo "Downloading Piwigo from: ${PIWIGO_URL}"
+
+          # Install unzip if not present (good practice for this step)
+          sudo apt-get update && sudo apt-get install unzip -y
 
           curl -L "${PIWIGO_URL}" -o piwigo.zip
           unzip piwigo.zip -d piwigo-temp
@@ -26,24 +29,18 @@ jobs:
           mv piwigo-temp/piwigo/* piwigo/
           rm -rf piwigo-temp piwigo.zip
 
-      # 💡 NEW STEP: Install rsync on the GitHub Actions runner
-      - name: Install rsync
-        run: |
-          sudo apt-get update
-          sudo apt-get install rsync -y
-
-      - name: Setup SSH and Rsync
-        uses: webfactory/ssh-agent@v0.9.0
+      # 💡 NEW STEP: Use scp-action for reliable file transfer
+      - name: Upload Piwigo files to VPS using SCP
+        uses: appleboy/scp-action@v1.0.7 # Use a recent stable version
         with:
-          ssh-private-key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
-
-      - name: Upload Piwigo to VPS
-        run: |
-          echo "Starting rsync to ${{ secrets.VPS_HOST }}:${{ secrets.VPS_PORT }}/storage/piwigo"
-          rsync -avz --delete \
-            -e "ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no" \
-            piwigo/ \
-            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/storage/piwigo/
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          source: "piwigo/" # Source directory to upload
+          target: "/storage/" # Target directory (files go to /storage/piwigo)
+          # Note: The 'piwigo/' directory contents will be copied into /storage/piwigo/
+          # The scp-action often simplifies path handling.
 
       - name: Execute Setup and Configuration Script on VPS
         uses: appleboy/ssh-action@v1.0.3
@@ -53,8 +50,7 @@ jobs:
           key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
           port: ${{ secrets.VPS_PORT }}
           script: |
-            # ... (The rest of the script for VPS setup remains the same)
-            # ... (omitting for brevity, use the full script from the last revision)
+            # --- START VPS SETUP SCRIPT ---
 
             # Use PHP 8.2 (common for Alpine 3.16)
             PHP_VERSION="82"
@@ -62,7 +58,8 @@ jobs:
 
             # 1. Update and install necessary packages (nginx, php, mariadb-client)
             apk update
-            apk add nginx \
+            # Use '--no-cache' to save space/time on the very small VPS
+            apk add --no-cache nginx \
               \${PHP_FPM_SERVICE} \
               php\${PHP_VERSION}-mysqli \
               php\${PHP_VERSION}-exif \
@@ -112,3 +109,5 @@ jobs:
             rc-service nginx start
 
             echo "Deployment and basic web server setup complete."
+
+            # --- END VPS SETUP SCRIPT ---
