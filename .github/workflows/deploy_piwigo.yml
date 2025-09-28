@@ -29,7 +29,7 @@ jobs:
           rm -rf piwigo-temp piwigo.zip
 
       - name: Upload Piwigo files to VPS using SCP
-        uses: appleboy/scp-action@v1.0.7
+        uses: appleboy/scp-action@v1
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
@@ -39,7 +39,7 @@ jobs:
           target: "/storage/"
 
       - name: Execute Setup and Configuration Script on VPS
-        uses: appleboy/ssh-action@v1.0.3
+        uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
