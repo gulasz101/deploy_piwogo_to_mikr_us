@@ -43,40 +43,54 @@ jobs:
           # The scp-action often simplifies path handling.
 
       - name: Execute Setup and Configuration Script on VPS
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
           port: ${{ secrets.VPS_PORT }}
+          # The script is executed entirely on the VPS
           script: |
             # --- START VPS SETUP SCRIPT ---
 
-            # Use PHP 8.2 (common for Alpine 3.16)
+            # Define variables correctly. Let the remote shell evaluate them.
             PHP_VERSION="82"
-            PHP_FPM_SERVICE="php\${PHP_VERSION}-fpm"
+            PHP_FPM_PACKAGE="php\${PHP_VERSION}-fpm"
 
-            # 1. Update and install necessary packages (nginx, php, mariadb-client)
+            # For Alpine 3.16, the PHP-FPM service is often just 'php-fpm', 
+            # and the package is 'phpXX-fpm'. We'll use the generic service name 
+            # and adjust the socket path if needed.
+
+            # 1. Update and install necessary packages 
             apk update
-            # Use '--no-cache' to save space/time on the very small VPS
+            # Packages required: nginx, php-fpm (with extensions), mariadb-client, imagemagick
             apk add --no-cache nginx \
-              \${PHP_FPM_SERVICE} \
+              \${PHP_FPM_PACKAGE} \
               php\${PHP_VERSION}-mysqli \
+              php\${PHP_VERSION}-pdo_mysql \
               php\${PHP_VERSION}-exif \
               php\${PHP_VERSION}-gd \
               php\${PHP_VERSION}-curl \
               php\${PHP_VERSION}-json \
               php\${PHP_VERSION}-session \
               php\${PHP_VERSION}-zlib \
-              mariadb-client
+              php\${PHP_VERSION}-iconv \
+              php\${PHP_VERSION}-dom \
+              mariadb-client \
+              imagemagick
 
-            # 2. Configure PHP-FPM for socket usage
+            # 2. Configure PHP-FPM
+            # Note: /etc/php82/php-fpm.d/www.conf is the standard path
             WWW_CONF="/etc/php\${PHP_VERSION}/php-fpm.d/www.conf"
-            sed -i 's/^;listen.owner/listen.owner/' \$WWW_CONF
-            sed -i 's/^;listen.group/listen.group/' \$WWW_CONF
+
+            # IMPORTANT: The sed commands need to be run AFTER the packages are installed
+            sed -i 's/^;listen.owner/listen.owner/' \${WWW_CONF}
+            sed -i 's/^;listen.group/listen.group/' \${WWW_CONF}
 
             # 3. Configure Nginx with IPv6 (::) and domain
-            cat << EOL > /etc/nginx/conf.d/piwigo.conf
+            # We use 'cat << EOF' without quotes to allow shell variables (like \$document_root) 
+            # to be passed literally to the file, while ensuring local variables are NOT evaluated.
+            cat << 'EOL' > /etc/nginx/conf.d/piwigo.conf
             server {
                 listen [::]:80;
                 server_name insidepumpkin.com; 
@@ -87,9 +101,10 @@ jobs:
                     try_files \$uri \$uri/ /index.php?\$args;
                 }
 
-                location ~ \\.php\$ {
+                location ~ \.php$ {
                     try_files \$uri =404;
-                    fastcgi_split_path_info ^(.+\\.php)(/.+)\$;
+                    fastcgi_split_path_info ^(.+\.php)(/.+)\$;
+                    # The default socket path for php-fpm in Alpine is usually /run/php-fpm.sock
                     fastcgi_pass unix:/run/php-fpm.sock; 
                     fastcgi_index index.php;
                     include fastcgi.conf;
@@ -98,14 +113,15 @@ jobs:
             }
             EOL
 
-            # 4. Permissions (Crucial for Nginx/PHP-FPM access)
+            # 4. Permissions
             chown -R nginx:nginx /storage/piwigo
 
             # 5. Enable and Start Services using OpenRC
-            rc-update add \${PHP_FPM_SERVICE} default
+            # Naming convention for PHP-FPM service on Alpine can be tricky. We use the generic 'php-fpm'.
+            rc-update add php-fpm default 
             rc-update add nginx default
 
-            rc-service \${PHP_FPM_SERVICE} start
+            rc-service php-fpm start
             rc-service nginx start
 
             echo "Deployment and basic web server setup complete."
