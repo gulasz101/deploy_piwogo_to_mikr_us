@@ -31,7 +31,7 @@ jobs:
 
       # 💡 NEW STEP: Use scp-action for reliable file transfer
       - name: Upload Piwigo files to VPS using SCP
-        uses: appleboy/scp-action@v1.0.7 # Use a recent stable version
+        uses: appleboy/scp-action@v1
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
@@ -43,7 +43,7 @@ jobs:
           # The scp-action often simplifies path handling.
 
       - name: Execute Setup and Configuration Script on VPS
-        uses: appleboy/ssh-action@v1.0.3
+        uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
