@@ -18,9 +18,8 @@ jobs:
         run: |
           PIWIGO_VERSION="14.0.0" 
           PIWIGO_URL="https://piwigo.org/download/dlcounter.php?code=latest&id=piwigo-${PIWIGO_VERSION}.zip"
-          echo "Downloading Piwigo from: ${PIWIGO_URL}"
 
-          # Install unzip if not present (good practice for this step)
+          # Install unzip on the runner
           sudo apt-get update && sudo apt-get install unzip -y
 
           curl -L "${PIWIGO_URL}" -o piwigo.zip
@@ -29,18 +28,15 @@ jobs:
           mv piwigo-temp/piwigo/* piwigo/
           rm -rf piwigo-temp piwigo.zip
 
-      # 💡 NEW STEP: Use scp-action for reliable file transfer
       - name: Upload Piwigo files to VPS using SCP
-        uses: appleboy/scp-action@v1
+        uses: appleboy/scp-action@v1.0.7
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
           port: ${{ secrets.VPS_PORT }}
-          source: "piwigo/" # Source directory to upload
-          target: "/storage/" # Target directory (files go to /storage/piwigo)
-          # Note: The 'piwigo/' directory contents will be copied into /storage/piwigo/
-          # The scp-action often simplifies path handling.
+          source: "piwigo/"
+          target: "/storage/"
 
       - name: Execute Setup and Configuration Script on VPS
         uses: appleboy/ssh-action@v1.0.3
@@ -49,48 +45,41 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
           port: ${{ secrets.VPS_PORT }}
-          # The script is executed entirely on the VPS
           script: |
             # --- START VPS SETUP SCRIPT ---
 
-            # Define variables correctly. Let the remote shell evaluate them.
-            PHP_VERSION="82"
-            PHP_FPM_PACKAGE="php\${PHP_VERSION}-fpm"
-
-            # For Alpine 3.16, the PHP-FPM service is often just 'php-fpm', 
-            # and the package is 'phpXX-fpm'. We'll use the generic service name 
-            # and adjust the socket path if needed.
+            # Use php8 as the package prefix based on your confirmation
+            PHP_PREFIX="php8"
 
             # 1. Update and install necessary packages 
             apk update
-            # Packages required: nginx, php-fpm (with extensions), mariadb-client, imagemagick
+            # Packages: nginx, php8-fpm (with extensions), mariadb-client, imagemagick
             apk add --no-cache nginx \
-              \${PHP_FPM_PACKAGE} \
-              php\${PHP_VERSION}-mysqli \
-              php\${PHP_VERSION}-pdo_mysql \
-              php\${PHP_VERSION}-exif \
-              php\${PHP_VERSION}-gd \
-              php\${PHP_VERSION}-curl \
-              php\${PHP_VERSION}-json \
-              php\${PHP_VERSION}-session \
-              php\${PHP_VERSION}-zlib \
-              php\${PHP_VERSION}-iconv \
-              php\${PHP_VERSION}-dom \
+              \${PHP_PREFIX}-fpm \
+              \${PHP_PREFIX}-mysqli \
+              \${PHP_PREFIX}-pdo_mysql \
+              \${PHP_PREFIX}-exif \
+              \${PHP_PREFIX}-gd \
+              \${PHP_PREFIX}-curl \
+              \${PHP_PREFIX}-json \
+              \${PHP_PREFIX}-session \
+              \${PHP_PREFIX}-zlib \
+              \${PHP_PREFIX}-iconv \
+              \${PHP_PREFIX}-dom \
               mariadb-client \
               imagemagick
 
             # 2. Configure PHP-FPM
-            # Note: /etc/php82/php-fpm.d/www.conf is the standard path
-            WWW_CONF="/etc/php\${PHP_VERSION}/php-fpm.d/www.conf"
+            # Alpine's PHP config path needs to use the correct version directory (e.g., /etc/php8/php-fpm.d/www.conf)
+            WWW_CONF="/etc/\${PHP_PREFIX}/php-fpm.d/www.conf"
 
-            # IMPORTANT: The sed commands need to be run AFTER the packages are installed
+            # Ensure listen.owner/group are set for Nginx to access the socket
             sed -i 's/^;listen.owner/listen.owner/' \${WWW_CONF}
             sed -i 's/^;listen.group/listen.group/' \${WWW_CONF}
 
             # 3. Configure Nginx with IPv6 (::) and domain
-            # We use 'cat << EOF' without quotes to allow shell variables (like \$document_root) 
-            # to be passed literally to the file, while ensuring local variables are NOT evaluated.
-            cat << 'EOL' > /etc/nginx/conf.d/piwigo.conf
+            # We are writing the config to /etc/nginx/http.d/piwigo.conf as it exists
+            cat << 'EOL' > /etc/nginx/http.d/piwigo.conf
             server {
                 listen [::]:80;
                 server_name insidepumpkin.com; 
@@ -117,7 +106,7 @@ jobs:
             chown -R nginx:nginx /storage/piwigo
 
             # 5. Enable and Start Services using OpenRC
-            # Naming convention for PHP-FPM service on Alpine can be tricky. We use the generic 'php-fpm'.
+            # We use the service name 'php-fpm' and not 'php8-fpm' as the package installs the generic service
             rc-update add php-fpm default 
             rc-update add nginx default
 
