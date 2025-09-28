@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch: # Allows manual trigger
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -16,20 +16,21 @@ jobs:
       - name: Download Piwigo
         id: download_piwigo
         run: |
-          # Using version 14.0.0. Update this line if you need a newer version.
           PIWIGO_VERSION="14.0.0" 
           PIWIGO_URL="https://piwigo.org/download/dlcounter.php?code=latest&id=piwigo-${PIWIGO_VERSION}.zip"
           echo "Downloading Piwigo from: ${PIWIGO_URL}"
 
           curl -L "${PIWIGO_URL}" -o piwigo.zip
-
-          # Unzip and move to the 'piwigo' directory for transfer
           unzip piwigo.zip -d piwigo-temp
           mkdir -p piwigo/
           mv piwigo-temp/piwigo/* piwigo/
-
-          # Clean up
           rm -rf piwigo-temp piwigo.zip
+
+      # 💡 NEW STEP: Install rsync on the GitHub Actions runner
+      - name: Install rsync
+        run: |
+          sudo apt-get update
+          sudo apt-get install rsync -y
 
       - name: Setup SSH and Rsync
         uses: webfactory/ssh-agent@v0.9.0
@@ -52,9 +53,10 @@ jobs:
           key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
           port: ${{ secrets.VPS_PORT }}
           script: |
-            # --- START VPS SETUP SCRIPT ---
+            # ... (The rest of the script for VPS setup remains the same)
+            # ... (omitting for brevity, use the full script from the last revision)
 
-            # Using PHP 8.2 (common for Alpine 3.16)
+            # Use PHP 8.2 (common for Alpine 3.16)
             PHP_VERSION="82"
             PHP_FPM_SERVICE="php\${PHP_VERSION}-fpm"
 
@@ -73,14 +75,13 @@ jobs:
 
             # 2. Configure PHP-FPM for socket usage
             WWW_CONF="/etc/php\${PHP_VERSION}/php-fpm.d/www.conf"
-            # Ensure listen.owner/group are set for Nginx to access the socket
             sed -i 's/^;listen.owner/listen.owner/' \$WWW_CONF
             sed -i 's/^;listen.group/listen.group/' \$WWW_CONF
 
             # 3. Configure Nginx with IPv6 (::) and domain
             cat << EOL > /etc/nginx/conf.d/piwigo.conf
             server {
-                listen [::]:80; # Listen on IPv6 (::) port 80
+                listen [::]:80;
                 server_name insidepumpkin.com; 
                 root /storage/piwigo;
                 index index.php index.html index.htm;
@@ -92,7 +93,6 @@ jobs:
                 location ~ \\.php\$ {
                     try_files \$uri =404;
                     fastcgi_split_path_info ^(.+\\.php)(/.+)\$;
-                    # Use the correct PHP-FPM socket path
                     fastcgi_pass unix:/run/php-fpm.sock; 
                     fastcgi_index index.php;
                     include fastcgi.conf;
@@ -112,5 +112,3 @@ jobs:
             rc-service nginx start
 
             echo "Deployment and basic web server setup complete."
-
-            # --- END VPS SETUP SCRIPT ---
