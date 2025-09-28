@@ -1,0 +1,116 @@
+name: Deploy Piwigo to VPS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: # Allows manual trigger
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Piwigo
+        id: download_piwigo
+        run: |
+          # Using version 14.0.0. Update this line if you need a newer version.
+          PIWIGO_VERSION="14.0.0" 
+          PIWIGO_URL="https://piwigo.org/download/dlcounter.php?code=latest&id=piwigo-${PIWIGO_VERSION}.zip"
+          echo "Downloading Piwigo from: ${PIWIGO_URL}"
+
+          curl -L "${PIWIGO_URL}" -o piwigo.zip
+
+          # Unzip and move to the 'piwigo' directory for transfer
+          unzip piwigo.zip -d piwigo-temp
+          mkdir -p piwigo/
+          mv piwigo-temp/piwigo/* piwigo/
+
+          # Clean up
+          rm -rf piwigo-temp piwigo.zip
+
+      - name: Setup SSH and Rsync
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+
+      - name: Upload Piwigo to VPS
+        run: |
+          echo "Starting rsync to ${{ secrets.VPS_HOST }}:${{ secrets.VPS_PORT }}/storage/piwigo"
+          rsync -avz --delete \
+            -e "ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no" \
+            piwigo/ \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/storage/piwigo/
+
+      - name: Execute Setup and Configuration Script on VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script: |
+            # --- START VPS SETUP SCRIPT ---
+
+            # Using PHP 8.2 (common for Alpine 3.16)
+            PHP_VERSION="82"
+            PHP_FPM_SERVICE="php\${PHP_VERSION}-fpm"
+
+            # 1. Update and install necessary packages (nginx, php, mariadb-client)
+            apk update
+            apk add nginx \
+              \${PHP_FPM_SERVICE} \
+              php\${PHP_VERSION}-mysqli \
+              php\${PHP_VERSION}-exif \
+              php\${PHP_VERSION}-gd \
+              php\${PHP_VERSION}-curl \
+              php\${PHP_VERSION}-json \
+              php\${PHP_VERSION}-session \
+              php\${PHP_VERSION}-zlib \
+              mariadb-client
+
+            # 2. Configure PHP-FPM for socket usage
+            WWW_CONF="/etc/php\${PHP_VERSION}/php-fpm.d/www.conf"
+            # Ensure listen.owner/group are set for Nginx to access the socket
+            sed -i 's/^;listen.owner/listen.owner/' \$WWW_CONF
+            sed -i 's/^;listen.group/listen.group/' \$WWW_CONF
+
+            # 3. Configure Nginx with IPv6 (::) and domain
+            cat << EOL > /etc/nginx/conf.d/piwigo.conf
+            server {
+                listen [::]:80; # Listen on IPv6 (::) port 80
+                server_name insidepumpkin.com; 
+                root /storage/piwigo;
+                index index.php index.html index.htm;
+
+                location / {
+                    try_files \$uri \$uri/ /index.php?\$args;
+                }
+
+                location ~ \\.php\$ {
+                    try_files \$uri =404;
+                    fastcgi_split_path_info ^(.+\\.php)(/.+)\$;
+                    # Use the correct PHP-FPM socket path
+                    fastcgi_pass unix:/run/php-fpm.sock; 
+                    fastcgi_index index.php;
+                    include fastcgi.conf;
+                    fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+                }
+            }
+            EOL
+
+            # 4. Permissions (Crucial for Nginx/PHP-FPM access)
+            chown -R nginx:nginx /storage/piwigo
+
+            # 5. Enable and Start Services using OpenRC
+            rc-update add \${PHP_FPM_SERVICE} default
+            rc-update add nginx default
+
+            rc-service \${PHP_FPM_SERVICE} start
+            rc-service nginx start
+
+            echo "Deployment and basic web server setup complete."
+
+            # --- END VPS SETUP SCRIPT ---
