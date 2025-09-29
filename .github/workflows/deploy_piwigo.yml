@@ -46,10 +46,10 @@ jobs:
           script: |
             # --- START VPS SETUP SCRIPT ---
 
-            PHP_VERSION="81"
-            PHP_PREFIX="php${PHP_VERSION}"
-            PHP_FPM_SERVICE="php-fpm${PHP_VERSION}"
+            PHP_PREFIX="php81"
+            PHP_FPM_SERVICE="php-fpm81"
 
+            # 1. Update and install necessary packages
             apk update
             apk add --no-cache nginx \
               ${PHP_PREFIX}-fpm \
@@ -58,20 +58,20 @@ jobs:
               ${PHP_PREFIX}-exif \
               ${PHP_PREFIX}-gd \
               ${PHP_PREFIX}-curl \
+              ${PHP_PREFIX}-json \
               ${PHP_PREFIX}-session \
+              ${PHP_PREFIX}-zlib \
               ${PHP_PREFIX}-iconv \
               ${PHP_PREFIX}-dom \
-              ${PHP_PREFIX}-fileinfo \
-              ${PHP_PREFIX}-zip \
-              ${PHP_PREFIX}-mbstring \
-              mariadb-client \
               imagemagick
 
-            # --- PHP-FPM config (TCP mode) ---
+            # 2. Configure PHP-FPM (force nginx user + TCP mode)
             WWW_CONF="/etc/${PHP_PREFIX}/php-fpm.d/www.conf"
+            sed -i 's/^user = .*/user = nginx/' ${WWW_CONF}
+            sed -i 's/^group = .*/group = nginx/' ${WWW_CONF}
             sed -i 's|^listen = .*|listen = 127.0.0.1:9000|' ${WWW_CONF}
 
-            # --- Nginx config ---
+            # 3. Configure Nginx
             cat << 'EOL' > /etc/nginx/http.d/piwigo.conf
             server {
                 listen [::]:80;
@@ -94,22 +94,20 @@ jobs:
             }
             EOL
 
-            # --- Permissions ---
-            chown -R nginx:nginx /storage/piwigo
+            # 4. Piwigo writable dirs
+            mkdir -p /storage/piwigo/_data/templates_c \
+                     /storage/piwigo/upload \
+                     /storage/piwigo/local/config
 
-            # --- Services ---
+            chown -R nginx:nginx /storage/piwigo/_data /storage/piwigo/upload /storage/piwigo/local
+            chmod -R 775 /storage/piwigo/_data /storage/piwigo/upload /storage/piwigo/local
+
+            # 5. Enable + start services
             rc-update add ${PHP_FPM_SERVICE} default
             rc-update add nginx default
-            rc-service ${PHP_FPM_SERVICE} restart || rc-service ${PHP_FPM_SERVICE} start
-            rc-service nginx restart || rc-service nginx start
+            rc-service ${PHP_FPM_SERVICE} restart
+            rc-service nginx restart
 
-            # --- MariaDB Setup ---
-            mysql -h "${{ secrets.VPS_MYSQL_HOST }}" -u root -p"${{ secrets.VPS_MYSQL_PASSWORD }}" <<SQL
-            CREATE DATABASE IF NOT EXISTS \`${{ secrets.VPS_MYSQL_DATABASE }}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-            CREATE USER IF NOT EXISTS '${{ secrets.VPS_MYSQL_USER }}'@'%' IDENTIFIED BY '${{ secrets.VPS_MYSQL_PASSWORD }}';
-            GRANT ALL PRIVILEGES ON \`${{ secrets.VPS_MYSQL_DATABASE }}\`.* TO '${{ secrets.VPS_MYSQL_USER }}'@'%';
-            FLUSH PRIVILEGES;
-            SQL
+            echo "✅ Deployment complete: Piwigo + PHP-FPM (nginx user, TCP mode)."
 
-            echo "Deployment complete. Nginx + PHP-FPM (TCP mode) + MariaDB ready."
             # --- END VPS SETUP SCRIPT ---
