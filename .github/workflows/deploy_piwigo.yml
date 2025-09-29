@@ -14,7 +14,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download and Extract Piwigo
-        id: download_piwigo
         run: |
           PIWIGO_VERSION="14.0.0"
           PIWIGO_URL="https://piwigo.org/download/dlcounter.php?code=latest&id=piwigo-${PIWIGO_VERSION}.zip"
@@ -47,12 +46,10 @@ jobs:
           script: |
             # --- START VPS SETUP SCRIPT ---
 
-            # Alpine 3.16 ships PHP 8.1
             PHP_VERSION="81"
             PHP_PREFIX="php${PHP_VERSION}"
             PHP_FPM_SERVICE="php-fpm${PHP_VERSION}"
 
-            # 1. Update and install necessary packages
             apk update
             apk add --no-cache nginx \
               ${PHP_PREFIX}-fpm \
@@ -70,12 +67,13 @@ jobs:
               mariadb-client \
               imagemagick
 
-            # 2. Configure PHP-FPM
+            # --- PHP-FPM config ---
             WWW_CONF="/etc/${PHP_PREFIX}/php-fpm.d/www.conf"
+            sed -i 's|^listen = 127.0.0.1:9000|listen = /run/php81/php-fpm.sock|' ${WWW_CONF}
             sed -i 's/^;listen.owner/listen.owner/' ${WWW_CONF}
             sed -i 's/^;listen.group/listen.group/' ${WWW_CONF}
 
-            # 3. Configure Nginx
+            # --- Nginx config ---
             cat << 'EOL' > /etc/nginx/http.d/piwigo.conf
             server {
                 listen [::]:80;
@@ -98,16 +96,22 @@ jobs:
             }
             EOL
 
-            # 4. Permissions
+            # --- Permissions ---
             chown -R nginx:nginx /storage/piwigo
 
-            # 5. Enable and start services
+            # --- Services ---
             rc-update add ${PHP_FPM_SERVICE} default
             rc-update add nginx default
-
             rc-service ${PHP_FPM_SERVICE} restart || rc-service ${PHP_FPM_SERVICE} start
             rc-service nginx restart || rc-service nginx start
 
-            echo "Deployment and basic web server setup complete."
+            # --- MariaDB Setup ---
+            mysql -h "${{ secrets.VPS_MYSQL_HOST }}" -u root -p"${{ secrets.VPS_MYSQL_PASSWORD }}" <<SQL
+            CREATE DATABASE IF NOT EXISTS \`${{ secrets.VPS_MYSQL_DATABASE }}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+            CREATE USER IF NOT EXISTS '${{ secrets.VPS_MYSQL_USER }}'@'%' IDENTIFIED BY '${{ secrets.VPS_MYSQL_PASSWORD }}';
+            GRANT ALL PRIVILEGES ON \`${{ secrets.VPS_MYSQL_DATABASE }}\`.* TO '${{ secrets.VPS_MYSQL_USER }}'@'%';
+            FLUSH PRIVILEGES;
+            SQL
 
+            echo "Deployment complete. Nginx + PHP-FPM + MariaDB ready."
             # --- END VPS SETUP SCRIPT ---
