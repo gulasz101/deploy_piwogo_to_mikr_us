@@ -16,10 +16,9 @@ jobs:
       - name: Download and Extract Piwigo
         id: download_piwigo
         run: |
-          PIWIGO_VERSION="14.0.0" 
+          PIWIGO_VERSION="14.0.0"
           PIWIGO_URL="https://piwigo.org/download/dlcounter.php?code=latest&id=piwigo-${PIWIGO_VERSION}.zip"
 
-          # Install unzip on the runner
           sudo apt-get update && sudo apt-get install unzip -y
 
           curl -L "${PIWIGO_URL}" -o piwigo.zip
@@ -39,7 +38,7 @@ jobs:
           target: "/storage/"
 
       - name: Execute Setup and Configuration Script on VPS
-        uses: appleboy/ssh-action@v1.0.3
+        uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
@@ -48,57 +47,53 @@ jobs:
           script: |
             # --- START VPS SETUP SCRIPT ---
 
-            # Use php8 as the package prefix (e.g., php8-fpm)
-            PHP_MAJOR_VERSION="8"
-            PHP_PREFIX="php\${PHP_MAJOR_VERSION}"
-            # Define the actual service name expected by OpenRC (e.g., php-fpm8)
-            PHP_FPM_SERVICE="php-fpm\${PHP_MAJOR_VERSION}"
+            # Alpine 3.16 ships PHP 8.1
+            PHP_VERSION="81"
+            PHP_PREFIX="php${PHP_VERSION}"
+            PHP_FPM_SERVICE="php-fpm${PHP_VERSION}"
 
-            # 1. Update and install necessary packages 
+            # 1. Update and install necessary packages
             apk update
             apk add --no-cache nginx \
-              \${PHP_PREFIX}-fpm \
-              \${PHP_PREFIX}-mysqli \
-              \${PHP_PREFIX}-pdo_mysql \
-              \${PHP_PREFIX}-exif \
-              \${PHP_PREFIX}-gd \
-              \${PHP_PREFIX}-curl \
-              \${PHP_PREFIX}-json \
-              \${PHP_PREFIX}-session \
-              \${PHP_PREFIX}-zlib \
-              \${PHP_PREFIX}-iconv \
-              \${PHP_PREFIX}-dom \
+              ${PHP_PREFIX}-fpm \
+              ${PHP_PREFIX}-mysqli \
+              ${PHP_PREFIX}-pdo_mysql \
+              ${PHP_PREFIX}-exif \
+              ${PHP_PREFIX}-gd \
+              ${PHP_PREFIX}-curl \
+              ${PHP_PREFIX}-session \
+              ${PHP_PREFIX}-iconv \
+              ${PHP_PREFIX}-dom \
+              ${PHP_PREFIX}-fileinfo \
+              ${PHP_PREFIX}-zip \
+              ${PHP_PREFIX}-mbstring \
               mariadb-client \
               imagemagick
 
             # 2. Configure PHP-FPM
-            # Configuration file path (e.g., /etc/php8/php-fpm.d/www.conf)
-            WWW_CONF="/etc/\${PHP_PREFIX}/php-fpm.d/www.conf"
+            WWW_CONF="/etc/${PHP_PREFIX}/php-fpm.d/www.conf"
+            sed -i 's/^;listen.owner/listen.owner/' ${WWW_CONF}
+            sed -i 's/^;listen.group/listen.group/' ${WWW_CONF}
 
-            # Ensure listen.owner/group are set for Nginx to access the socket
-            sed -i 's/^;listen.owner/listen.owner/' \${WWW_CONF}
-            sed -i 's/^;listen.group/listen.group/' \${WWW_CONF}
-
-            # 3. Configure Nginx with IPv6 (::) and domain
+            # 3. Configure Nginx
             cat << 'EOL' > /etc/nginx/http.d/piwigo.conf
             server {
                 listen [::]:80;
-                server_name insidepumpkin.com; 
+                server_name insidepumpkin.com;
                 root /storage/piwigo;
                 index index.php index.html index.htm;
 
                 location / {
-                    try_files \$uri \$uri/ /index.php?\$args;
+                    try_files $uri $uri/ /index.php?$args;
                 }
 
                 location ~ \.php$ {
-                    try_files \$uri =404;
-                    fastcgi_split_path_info ^(.+\.php)(/.+)\$;
-                    # The default socket path for php-fpm is /run/php-fpm.sock, regardless of versioned service name
-                    fastcgi_pass unix:/run/php-fpm.sock; 
+                    try_files $uri =404;
+                    fastcgi_split_path_info ^(.+\.php)(/.+)$;
+                    fastcgi_pass unix:/run/php81/php-fpm.sock;
                     fastcgi_index index.php;
                     include fastcgi.conf;
-                    fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+                    fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
                 }
             }
             EOL
@@ -106,13 +101,12 @@ jobs:
             # 4. Permissions
             chown -R nginx:nginx /storage/piwigo
 
-            # 5. Enable and Start Services using OpenRC
-            # CRITICAL FIX: Use the versioned service name (e.g., php-fpm8) for OpenRC
-            rc-update add \${PHP_FPM_SERVICE} default 
+            # 5. Enable and start services
+            rc-update add ${PHP_FPM_SERVICE} default
             rc-update add nginx default
 
-            rc-service \${PHP_FPM_SERVICE} start
-            rc-service nginx start
+            rc-service ${PHP_FPM_SERVICE} restart || rc-service ${PHP_FPM_SERVICE} start
+            rc-service nginx restart || rc-service nginx start
 
             echo "Deployment and basic web server setup complete."
 
