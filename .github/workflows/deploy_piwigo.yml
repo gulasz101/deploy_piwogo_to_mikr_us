@@ -67,11 +67,9 @@ jobs:
               mariadb-client \
               imagemagick
 
-            # --- PHP-FPM config ---
+            # --- PHP-FPM config (TCP mode) ---
             WWW_CONF="/etc/${PHP_PREFIX}/php-fpm.d/www.conf"
-            sed -i 's|^listen = 127.0.0.1:9000|listen = /run/php81/php-fpm.sock|' ${WWW_CONF}
-            sed -i 's/^;listen.owner/listen.owner/' ${WWW_CONF}
-            sed -i 's/^;listen.group/listen.group/' ${WWW_CONF}
+            sed -i 's|^listen = .*|listen = 127.0.0.1:9000|' ${WWW_CONF}
 
             # --- Nginx config ---
             cat << 'EOL' > /etc/nginx/http.d/piwigo.conf
@@ -88,7 +86,7 @@ jobs:
                 location ~ \.php$ {
                     try_files $uri =404;
                     fastcgi_split_path_info ^(.+\.php)(/.+)$;
-                    fastcgi_pass unix:/run/php81/php-fpm.sock;
+                    fastcgi_pass 127.0.0.1:9000;
                     fastcgi_index index.php;
                     include fastcgi.conf;
                     fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
@@ -113,5 +111,5 @@ jobs:
             FLUSH PRIVILEGES;
             SQL
 
-            echo "Deployment complete. Nginx + PHP-FPM + MariaDB ready."
+            echo "Deployment complete. Nginx + PHP-FPM (TCP mode) + MariaDB ready."
             # --- END VPS SETUP SCRIPT ---
