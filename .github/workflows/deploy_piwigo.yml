@@ -39,7 +39,7 @@ jobs:
           target: "/storage/"
 
       - name: Execute Setup and Configuration Script on VPS
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
@@ -48,12 +48,14 @@ jobs:
           script: |
             # --- START VPS SETUP SCRIPT ---
 
-            # Use php8 as the package prefix based on your confirmation
-            PHP_PREFIX="php8"
+            # Use php8 as the package prefix (e.g., php8-fpm)
+            PHP_MAJOR_VERSION="8"
+            PHP_PREFIX="php\${PHP_MAJOR_VERSION}"
+            # Define the actual service name expected by OpenRC (e.g., php-fpm8)
+            PHP_FPM_SERVICE="php-fpm\${PHP_MAJOR_VERSION}"
 
             # 1. Update and install necessary packages 
             apk update
-            # Packages: nginx, php8-fpm (with extensions), mariadb-client, imagemagick
             apk add --no-cache nginx \
               \${PHP_PREFIX}-fpm \
               \${PHP_PREFIX}-mysqli \
@@ -70,7 +72,7 @@ jobs:
               imagemagick
 
             # 2. Configure PHP-FPM
-            # Alpine's PHP config path needs to use the correct version directory (e.g., /etc/php8/php-fpm.d/www.conf)
+            # Configuration file path (e.g., /etc/php8/php-fpm.d/www.conf)
             WWW_CONF="/etc/\${PHP_PREFIX}/php-fpm.d/www.conf"
 
             # Ensure listen.owner/group are set for Nginx to access the socket
@@ -78,7 +80,6 @@ jobs:
             sed -i 's/^;listen.group/listen.group/' \${WWW_CONF}
 
             # 3. Configure Nginx with IPv6 (::) and domain
-            # We are writing the config to /etc/nginx/http.d/piwigo.conf as it exists
             cat << 'EOL' > /etc/nginx/http.d/piwigo.conf
             server {
                 listen [::]:80;
@@ -93,7 +94,7 @@ jobs:
                 location ~ \.php$ {
                     try_files \$uri =404;
                     fastcgi_split_path_info ^(.+\.php)(/.+)\$;
-                    # The default socket path for php-fpm in Alpine is usually /run/php-fpm.sock
+                    # The default socket path for php-fpm is /run/php-fpm.sock, regardless of versioned service name
                     fastcgi_pass unix:/run/php-fpm.sock; 
                     fastcgi_index index.php;
                     include fastcgi.conf;
@@ -106,11 +107,11 @@ jobs:
             chown -R nginx:nginx /storage/piwigo
 
             # 5. Enable and Start Services using OpenRC
-            # We use the service name 'php-fpm' and not 'php8-fpm' as the package installs the generic service
-            rc-update add php-fpm default 
+            # CRITICAL FIX: Use the versioned service name (e.g., php-fpm8) for OpenRC
+            rc-update add \${PHP_FPM_SERVICE} default 
             rc-update add nginx default
 
-            rc-service php-fpm start
+            rc-service \${PHP_FPM_SERVICE} start
             rc-service nginx start
 
             echo "Deployment and basic web server setup complete."
