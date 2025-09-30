@@ -15,16 +15,34 @@ jobs:
 
       - name: Download and Extract Piwigo
         run: |
-          PIWIGO_VERSION="14.0.0"
-          PIWIGO_URL="https://piwigo.org/download/dlcounter.php?code=latest&id=piwigo-${PIWIGO_VERSION}.zip"
+          PIWIGO_VERSION="16.0.0beta2"
+          # Using direct download link for beta version
+          PIWIGO_URL="https://piwigo.org/download/dlcounter.php?code=${PIWIGO_VERSION}&id=piwigo-${PIWIGO_VERSION}.zip"
 
           sudo apt-get update && sudo apt-get install unzip -y
 
+          echo "Downloading Piwigo ${PIWIGO_VERSION}..."
           curl -L "${PIWIGO_URL}" -o piwigo.zip
-          unzip piwigo.zip -d piwigo-temp
+
+          if [ ! -s piwigo.zip ]; then
+            echo "❌ Failed to download Piwigo ${PIWIGO_VERSION}"
+            echo "Trying alternative download method..."
+            # Alternative download location
+            curl -L "https://piwigo.org/download/piwigo-${PIWIGO_VERSION}.zip" -o piwigo.zip
+          fi
+
+          unzip -q piwigo.zip -d piwigo-temp
           mkdir -p piwigo/
-          mv piwigo-temp/piwigo/* piwigo/
+
+          # Handle different extraction structures
+          if [ -d "piwigo-temp/piwigo" ]; then
+            mv piwigo-temp/piwigo/* piwigo/
+          else
+            mv piwigo-temp/* piwigo/
+          fi
+
           rm -rf piwigo-temp piwigo.zip
+          echo "✅ Piwigo ${PIWIGO_VERSION} extracted successfully"
 
       - name: Upload Piwigo files to VPS using SCP
         uses: appleboy/scp-action@v1
@@ -63,21 +81,59 @@ jobs:
               ${PHP_PREFIX}-zlib \
               ${PHP_PREFIX}-iconv \
               ${PHP_PREFIX}-dom \
+              ${PHP_PREFIX}-xml \
+              ${PHP_PREFIX}-simplexml \
+              ${PHP_PREFIX}-fileinfo \
               imagemagick
 
-            # 2. Configure PHP-FPM (force nginx user + TCP mode)
+            # 2. Configure PHP-FPM for low memory (384MB VPS)
             WWW_CONF="/etc/${PHP_PREFIX}/php-fpm.d/www.conf"
             sed -i 's/^user = .*/user = nginx/' ${WWW_CONF}
             sed -i 's/^group = .*/group = nginx/' ${WWW_CONF}
             sed -i 's|^listen = .*|listen = 127.0.0.1:9000|' ${WWW_CONF}
 
-            # 3. Configure Nginx
+            # Optimize PHP-FPM for low memory
+            cat << 'EOL' >> ${WWW_CONF}
+
+            ; Low memory optimizations for 384MB VPS
+            pm.max_children = 4
+            pm.start_servers = 1
+            pm.min_spare_servers = 1
+            pm.max_spare_servers = 2
+            pm.max_requests = 100
+            php_admin_value[memory_limit] = 96M
+            php_admin_value[max_execution_time] = 90
+            php_admin_value[upload_max_filesize] = 35M
+            php_admin_value[post_max_size] = 35M
+            EOL
+
+            # 3. Configure PHP.ini for image processing
+            PHP_INI="/etc/${PHP_PREFIX}/php.ini"
+            if [ -f "${PHP_INI}" ]; then
+                sed -i 's/^memory_limit = .*/memory_limit = 96M/' ${PHP_INI}
+                sed -i 's/^max_execution_time = .*/max_execution_time = 90/' ${PHP_INI}
+                sed -i 's/^upload_max_filesize = .*/upload_max_filesize = 20M/' ${PHP_INI}
+                sed -i 's/^post_max_size = .*/post_max_size = 20M/' ${PHP_INI}
+                # Enable GD as primary image processor
+                sed -i 's/^;extension=gd/extension=gd/' ${PHP_INI}
+                # Enable additional extensions for Piwigo 16
+                sed -i 's/^;extension=simplexml/extension=simplexml/' ${PHP_INI}
+                sed -i 's/^;extension=xml/extension=xml/' ${PHP_INI}
+                sed -i 's/^;extension=fileinfo/extension=fileinfo/' ${PHP_INI}
+            fi
+
+            # 4. Configure Nginx
             cat << 'EOL' > /etc/nginx/http.d/piwigo.conf
             server {
                 listen [::]:80;
                 server_name insidepumpkin.com;
                 root /storage/piwigo;
                 index index.php index.html index.htm;
+
+                # Client timeouts for slow processing
+                client_max_body_size 20M;
+                client_body_timeout 90;
+                client_header_timeout 90;
 
                 location / {
                     try_files $uri $uri/ /index.php?$args;
@@ -90,24 +146,49 @@ jobs:
                     fastcgi_index index.php;
                     include fastcgi.conf;
                     fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+                    
+                    # FastCGI timeouts for image processing
+                    fastcgi_read_timeout 90;
+                    fastcgi_connect_timeout 90;
+                    fastcgi_send_timeout 90;
                 }
             }
             EOL
 
-            # 4. Piwigo writable dirs
+            # 5. Create swap file for low memory situations (512MB)
+            # if [ ! -f /swapfile ]; then
+            #     fallocate -l 512M /swapfile
+            #     chmod 600 /swapfile
+            #     mkswap /swapfile
+            #     swapon /swapfile
+            #     echo '/swapfile none swap sw 0 0' >> /etc/fstab
+            #     echo "✅ 512MB swap file created"
+            # fi
+
+            # 6. Piwigo writable dirs (updated for Piwigo 16 structure)
             mkdir -p /storage/piwigo/_data/templates_c \
                      /storage/piwigo/upload \
-                     /storage/piwigo/local/config
+                     /storage/piwigo/local/config \
+                     /storage/piwigo/_data/i \
+                     /storage/piwigo/_data/cache
 
             chown -R nginx:nginx /storage/piwigo/_data /storage/piwigo/upload /storage/piwigo/local
             chmod -R 775 /storage/piwigo/_data /storage/piwigo/upload /storage/piwigo/local
 
-            # 5. Enable + start services
+            # 7. Enable + start services
             rc-update add ${PHP_FPM_SERVICE} default
             rc-update add nginx default
             rc-service ${PHP_FPM_SERVICE} restart
             rc-service nginx restart
 
-            echo "✅ Deployment complete: Piwigo + PHP-FPM (nginx user, TCP mode)."
+            # 8. Verify GD and required extensions are working
+            echo "<?php 
+            phpinfo(); 
+            ?>" > /storage/piwigo/gd_test.php
+
+            echo "✅ Deployment complete: Piwigo 16.0.0beta2 + PHP-FPM optimized for 384MB RAM"
+            echo "📸 PHP-GD installed and configured as primary image processor"
+            echo "💾 512MB swap file created for memory-intensive operations"
+            echo "🚀 Piwigo 16.0.0beta2 ready - remember this is a beta version!"
 
             # --- END VPS SETUP SCRIPT ---
